@@ -2,15 +2,12 @@
 MQTT 订阅客户端 - 升级推送结构
 """
 
+import traceback
 import paho.mqtt.client as mqtt
 import json
 import db
-from datetime import datetime
 
-# MQTT 配置
-MQTT_BROKER = "localhost"
-MQTT_PORT = 1883
-MQTT_TOPIC = "factory/forklift/+/alarm"
+from config import MQTT_BROKER, MQTT_PORT, MQTT_TOPIC
 
 # 全局 SocketIO 实例引用
 socketio_inst = None
@@ -54,11 +51,13 @@ def start_mqtt():
     client = mqtt.Client()
     client.on_connect = on_connect
     client.on_message = on_message
-    
+
     try:
         client.connect(MQTT_BROKER, MQTT_PORT, 60)
         client.loop_start()
         return client
     except Exception as e:
-        print(f"MQTT start error: {e}")
-        return None
+        # 启动阶段必须失败即退出，避免服务看似可用但实际上没有消费任何 MQTT 消息。
+        print(f"[MQTT启动失败] broker={MQTT_BROKER}:{MQTT_PORT}, error={e}")
+        print(traceback.format_exc())
+        raise
