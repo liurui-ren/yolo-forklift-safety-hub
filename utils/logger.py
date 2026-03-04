@@ -4,13 +4,21 @@ import os
 import sqlite3
 from datetime import datetime
 
+# 从根目录配置导入DB_PATH
+try:
+    from config import DB_PATH
+except ImportError:
+    # 兼容单独运行此脚本的情况
+    import sys
+    sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from config import DB_PATH
+
 # =========================
 # 日志存储配置
 # =========================
 LOG_DIR = "logs"
 os.makedirs(LOG_DIR, exist_ok=True)
 LOG_FILE = os.path.join(LOG_DIR, "ops.log")
-DB_PATH = "data.db"
 
 # =========================
 # logger 对象
@@ -49,6 +57,12 @@ def save_biz_log(ts, level, event, device_id, message, extra=None):
 def get_latest_biz_logs(limit=100):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
+    # 检查表是否存在以防首次运行报错
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='biz_logs'")
+    if not cursor.fetchone():
+        conn.close()
+        return []
+
     cursor.execute("SELECT * FROM biz_logs ORDER BY id DESC LIMIT ?", (limit,))
     rows = cursor.fetchall()
     conn.close()
