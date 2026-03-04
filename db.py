@@ -1,26 +1,39 @@
 """
-SQLite 数据访问与表初始化 - 设备状态管理系统
-整合功能：设备状态更新、离线标记、统计查询、兼容旧接口
+SQLite 数据访问与表初始化 - 增加趋势统计功能
 """
 
 import sqlite3
+import json
 from datetime import datetime
 
-# 统一数据库配置（可根据实际需求修改）
-DB_PATH = "alarm.db"  # 选用第二段的数据库名，也可改为 data.db
+from config import DB_PATH, HISTORY_LIMIT, TREND_LIMIT, DB_BUSY_TIMEOUT_MS
 
 def get_db_connection():
     """获取数据库连接，设置 row_factory 为 Row 以便通过键名访问"""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    # 使用 WAL 让读写并发更友好，读请求不会轻易被写事务阻塞。
+    conn.execute("PRAGMA journal_mode=WAL;")
+    # 设置 busy_timeout 后，遇到锁竞争会等待一段时间，降低 database is locked 概率。
+    conn.execute(f"PRAGMA busy_timeout={DB_BUSY_TIMEOUT_MS};")
     return conn
 
 def init_db():
-    """初始化数据库表结构（包含设备表和业务日志表）"""
+    """初始化数据库表结构"""
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    # 核心设备状态表
+    # 报警明细表
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS alarms (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            device_id TEXT,
+            alarm INTEGER,
+            timestamp TEXT
+        )
+    """)
+    
+    # 设备状态表
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS devices (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -33,8 +46,8 @@ def init_db():
             update_time TEXT
         )
     """)
-    
-    # 业务日志表（保留第一段的表结构）
+
+    # 业务日志表 (由 V1 引入)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS biz_logs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -46,24 +59,27 @@ def init_db():
             extra TEXT
         )
     """)
-    
+
     conn.commit()
     conn.close()
 
 def update_device_data(device_id, alarm):
     """
-    当收到 MQTT 消息时更新设备数据
-    :param device_id: 设备ID
-    :param alarm: 告警状态（0=无告警，1=有告警）
-    :return: 状态变更字典，包含 online_marked/alarm_raised/alarm_cleared 等标识
+    更新设备数据并插入历史记录。
+    返回变更状态字典，供日志使用。
     """
     conn = get_db_connection()
     cursor = conn.cursor()
-    
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    changed = {}  # 记录状态变更
+    changed = {}
     
-    # 1. 查询该设备当前状态
+    # 1. 插入历史明细表
+    cursor.execute("""
+        INSERT INTO alarms (device_id, alarm, timestamp)
+        VALUES (?, ?, ?)
+    """, (device_id, alarm, now_str))
+    
+    # 2. 更新设备实时状态逻辑
     cursor.execute("SELECT alarm_status, online_status, error_count, boot_time FROM devices WHERE device_id = ?", (device_id,))
     row = cursor.fetchone()
     
@@ -73,21 +89,17 @@ def update_device_data(device_id, alarm):
         error_count = row['error_count']
         boot_time = row['boot_time']
         
-        # 逻辑：如果之前离线，现在上线，则重置 boot_time
         if old_online == 0:
             boot_time = now_str
             changed['online_marked'] = True
-        
-        # 逻辑：当 alarm_status 从 0 变为 1 时，error_count + 1
+            
         if old_alarm == 0 and alarm == 1:
             error_count += 1
             changed['alarm_raised'] = True
-        
-        # 逻辑：当告警从1变为0时，标记告警已清除
+
         if old_alarm == 1 and alarm == 0:
             changed['alarm_cleared'] = True
-        
-        # 更新设备状态
+            
         cursor.execute("""
             UPDATE devices SET
                 alarm_status = ?,
@@ -99,22 +111,20 @@ def update_device_data(device_id, alarm):
             WHERE device_id = ?
         """, (alarm, error_count, boot_time, now_str, now_str, device_id))
     else:
-        # 新设备首次上线
         cursor.execute("""
             INSERT INTO devices (device_id, alarm_status, error_count, boot_time, last_seen, online_status, update_time)
             VALUES (?, ?, ?, ?, ?, 1, ?)
         """, (device_id, alarm, (1 if alarm == 1 else 0), now_str, now_str, now_str))
-        
         changed['online_marked'] = True
         if alarm == 1:
             changed['alarm_raised'] = True
-    
+        
     conn.commit()
     conn.close()
     return changed
 
 def set_device_offline(device_id):
-    """标记设备为离线状态"""
+    """标记设备为离线"""
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("UPDATE devices SET online_status = 0 WHERE device_id = ?", (device_id,))
@@ -131,14 +141,10 @@ def get_all_devices():
     return [dict(row) for row in rows]
 
 def get_latest_data_with_stats():
-    """
-    获取所有设备数据，并计算统计信息
-    返回格式: { devices: [...], stats: { total: X, online: Y, alarm: Z } }
-    """
+    """获取所有设备数据及统计信息"""
     devices = get_all_devices()
     total = len(devices)
     online = sum(1 for d in devices if d['online_status'] == 1)
-    # 只有在线且报警的才算作当前报警设备
     alarm = sum(1 for d in devices if d['alarm_status'] == 1 and d['online_status'] == 1)
     
     return {
@@ -150,22 +156,54 @@ def get_latest_data_with_stats():
         }
     }
 
-def get_latest_status():
-    """兼容旧接口：仅返回所有设备状态列表（等同于 get_all_devices）"""
-    return get_all_devices()
+def get_device_history_raw(device_id, limit=HISTORY_LIMIT):
+    """获取原始最近记录，用于列表展示"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT alarm, timestamp 
+        FROM alarms 
+        WHERE device_id = ? 
+        ORDER BY timestamp DESC 
+        LIMIT ?
+    """, (device_id, limit))
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
 
-# 测试代码（可选，用于验证功能）
-if __name__ == "__main__":
-    # 初始化数据库
-    init_db()
+def get_device_alarm_trend(device_id, limit=TREND_LIMIT):
+    """
+    报警次数趋势聚合统计：
+    1. 取最近 limit 条记录
+    2. 按分钟分组统计 alarm=1 的次数
+    3. 返回 labels(分钟) 和 counts(次数)
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
     
-    # 更新设备状态
-    print(update_device_data("device_001", 1))  # 新设备告警上线
-    print(update_device_data("device_001", 0))  # 告警清除
-    print(update_device_data("device_002", 0))  # 新设备正常上线
+    # 子查询取最近 limit 条，外部查询进行分钟级聚合
+    query = """
+        SELECT 
+            strftime('%H:%M', timestamp) as minute,
+            SUM(CASE WHEN alarm = 1 THEN 1 ELSE 0 END) as alarm_count
+        FROM (
+            SELECT alarm, timestamp 
+            FROM alarms 
+            WHERE device_id = ? 
+            ORDER BY timestamp DESC 
+            LIMIT ?
+        )
+        GROUP BY minute
+        ORDER BY minute ASC
+    """
+    cursor.execute(query, (device_id, limit))
+    rows = cursor.fetchall()
+    conn.close()
     
-    # 标记设备离线
-    set_device_offline("device_002")
+    labels = [row['minute'] for row in rows]
+    counts = [row['alarm_count'] for row in rows]
     
-    # 查询统计信息
-    print(get_latest_data_with_stats())
+    return {
+        "labels": labels,
+        "counts": counts
+    }
