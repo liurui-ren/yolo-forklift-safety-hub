@@ -1,5 +1,5 @@
 # YOLO Forklift Safety Hub
-## 叉车作业人车互斥报警系统
+## 叉车作业人车互斥报警系统云端部分
 
 一个面向工业现场的实时安全监控系统，基于 **Flask + Socket.IO + MQTT + SQLite** 构建。
 

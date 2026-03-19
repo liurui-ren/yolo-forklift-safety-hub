@@ -48,3 +48,9 @@ TREND_LIMIT = 20
 # ==============================
 POSITION_UPDATE_INTERVAL_SEC = 5
 POSITION_MOVE_RANGE = 20
+
+# ==============================
+# 图片上传配置
+# ==============================
+ALLOWED_IMAGE_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp'}
+MAX_IMAGE_SIZE_MB = 16

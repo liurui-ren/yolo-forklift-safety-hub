@@ -88,6 +88,12 @@ def init_db():
         )
     """)
 
+    # 添加唯一索引，防止重复记录
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_alarm_unique
+        ON alarm_images(device_id, timestamp)
+    """)
+
     conn.commit()
     conn.close()
 

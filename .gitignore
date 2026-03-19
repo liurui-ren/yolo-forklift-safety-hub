@@ -6,3 +6,6 @@ __pycache__/
 
 # 日志
 *.log
+
+.kilocode
+AGENTS.MD

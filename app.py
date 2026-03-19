@@ -2,6 +2,8 @@
 Flask + SocketIO 主程序
 """
 
+import os
+import re
 import sys
 import time
 import random
@@ -17,6 +19,8 @@ from config import (
     OFFLINE_TIMEOUT_SEC,
     HISTORY_LIMIT,
     TREND_LIMIT,
+    ALLOWED_IMAGE_EXTENSIONS,
+    MAX_IMAGE_SIZE_MB,
     AUTH_ENABLED,
     AUTH_TOKEN,
     POSITION_UPDATE_INTERVAL_SEC,
@@ -24,6 +28,8 @@ from config import (
 )
 
 app = Flask(__name__)
+app.config['MAX_CONTENT_LENGTH'] = MAX_IMAGE_SIZE_MB * 1024 * 1024  # 全局文件大小限制
+
 # 显式指定 async_mode 为 threading
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 
@@ -245,6 +251,91 @@ def get_latest_image(device_id):
 def serve_image(filename):
     """提供图片访问服务"""
     return send_from_directory("images", filename)
+
+
+# ============图片上传接口（MQTT+HTTP混合方案）============
+
+def _allowed_image_file(filename):
+    """检查文件扩展名是否在允许列表中"""
+    if not filename or '.' not in filename:
+        return False
+    ext = filename.rsplit('.', 1)[1].lower()
+    return ext in ALLOWED_IMAGE_EXTENSIONS
+
+
+@app.route("/api/upload-image", methods=["POST"])
+def upload_image():
+    """
+    接收设备上传的报警图片
+    用于MQTT+HTTP混合方案：设备先通过HTTP上传图片，再通过MQTT发送报警+图片URL
+    
+    请求参数（multipart/form-data）：
+    - device_id: 设备ID
+    - image: 图片文件
+    
+    返回：
+    - image_url: 图片访问URL
+    """
+    # 暂时不启用鉴权，允许设备直接上传图片
+    # 如需鉴权，可取消注释下一行：auth_failed = require_auth()
+    # if auth_failed: return auth_failed
+    
+    # 获取设备ID
+    device_id = request.form.get("device_id")
+    if not device_id:
+        return jsonify({"error": "缺少device_id参数"}), 400
+    
+    # 路径遍历防护：清理 device_id 中的非法字符
+    device_id = re.sub(r'[^\w\-]', '', device_id)
+    if not device_id:
+        return jsonify({"error": "无效的device_id"}), 400
+    
+    # 获取图片文件
+    image_file = request.files.get("image")
+    if not image_file:
+        return jsonify({"error": "缺少image参数"}), 400
+    
+    # 文件类型验证
+    if not _allowed_image_file(image_file.filename):
+        return jsonify({"error": "不支持的图片格式"}), 400
+    
+    # 文件大小限制
+    image_file.seek(0, 2)  # 跳到文件末尾
+    file_size = image_file.tell()  # 获取文件大小
+    image_file.seek(0)  # 回到文件开头
+    
+    max_size_bytes = MAX_IMAGE_SIZE_MB * 1024 * 1024
+    if file_size > max_size_bytes:
+        return jsonify({"error": f"文件大小超过{MAX_IMAGE_SIZE_MB}MB限制"}), 400
+    
+    # 生成文件名：设备ID_时间戳.jpg
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    filename = f"{device_id}_{timestamp}.jpg"
+    filepath = os.path.join("images", "alarms", filename)
+    
+    try:
+        # 保存图片文件
+        image_file.save(filepath)
+        
+        # 获取时间戳（用于数据库记录）
+        timestamp_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        # 保存到数据库
+        db.save_alarm_image(device_id, filepath, timestamp_str)
+        
+        # 记录日志
+        log_event("INFO", "device.image.uploaded", "biz", "app",
+                  "Image uploaded via HTTP", device_id=device_id,
+                  extra={"image_path": filepath})
+        
+        # 返回图片URL
+        image_url = f"/images/alarms/{filename}"
+        return jsonify({"image_url": image_url})
+        
+    except Exception as e:
+        log_event("ERROR", "device.image.upload_failed", "biz", "app",
+                  "Image upload failed", device_id=device_id, error=str(e))
+        return jsonify({"error": f"图片上传失败: {str(e)}"}), 500
 
 
 @app.route("/Dashboard.png")

@@ -39,11 +39,19 @@ def on_message(client, userdata, msg):
         # 更新数据库
         changed = db.update_device_data(device_id=device_id, alarm=alarm)
         
-        # 如果有报警且包含图片，保存图片
-        if alarm == 1 and payload.get("image"):
-            image_path = db.save_base64_image(device_id, payload["image"], timestamp)
-            if image_path:
-                log_event("INFO", "device.alarm.image_saved", "biz", "mqtt", "Alarm image saved", device_id=device_id, extra={"image_path": image_path})
+        # 如果有报警且包含图片URL（MQTT+HTTP混合方案）
+        # 图片已通过HTTP上传，这里只记录图片URL到数据库
+        if alarm == 1 and payload.get("image_url"):
+            image_url = payload["image_url"]
+            # 从URL中提取文件路径
+            if image_url.startswith("/images/"):
+                image_path = image_url[1:]  # 去掉开头的"/"
+            else:
+                image_path = image_url
+            
+            # 保存图片记录到数据库
+            db.save_alarm_image(device_id, image_path, timestamp)
+            log_event("INFO", "device.alarm.image_url_recorded", "biz", "mqtt", "Alarm image URL recorded", device_id=device_id, extra={"image_url": image_url})
         
         log_event("INFO", "mqtt.message.processed", "biz", "mqtt", "MQTT message processed and DB updated", device_id=device_id, topic=msg.topic, extra={"changed": changed})
 
