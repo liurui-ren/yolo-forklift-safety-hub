@@ -243,6 +243,45 @@ def get_device_alarm_trend(device_id, limit=TREND_LIMIT):
         "counts": counts
     }
 
+def get_device_alarm_hourly_today(device_id):
+    """
+    统计设备“当天每小时报警次数”（本地时间）。
+    Get per-hour alarm counts for the current local day.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT
+            strftime('%H', timestamp) AS hour,
+            COUNT(*) AS alarm_count
+        FROM alarms
+        WHERE device_id = ?
+          AND alarm = 1
+          AND date(timestamp) = date('now', 'localtime')
+        GROUP BY hour
+        ORDER BY hour ASC
+    """, (device_id,))
+    rows = cursor.fetchall()
+    conn.close()
+
+    # 预置 00-23 点，保证前端始终拿到完整 24 小时数组。
+    # Pre-fill 24 hour buckets so frontend always receives a full-day timeline.
+    labels = [f"{h:02d}:00" for h in range(24)]
+    counts = [0 for _ in range(24)]
+
+    for row in rows:
+        try:
+            hour_idx = int(row["hour"])
+        except (TypeError, ValueError):
+            continue
+        if 0 <= hour_idx <= 23:
+            counts[hour_idx] = int(row["alarm_count"] or 0)
+
+    return {
+        "labels": labels,
+        "counts": counts
+    }
+
 def save_alarm_image(device_id, image_path, timestamp):
     """保存报警图片记录到数据库"""
     conn = get_db_connection()

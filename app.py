@@ -210,6 +210,9 @@ def get_device_history(device_id):
 
     # 趋势聚合数据
     trend = db.get_device_alarm_trend(device_id, limit=TREND_LIMIT)
+    # 当天每小时报警次数（用于设备详情图表）。
+    # Per-hour alarm counts for today (used by device detail chart).
+    hourly = db.get_device_alarm_hourly_today(device_id)
     # 原始明细记录
     raw_history = db.get_device_history_raw(device_id, limit=HISTORY_LIMIT)
     
@@ -228,6 +231,8 @@ def get_device_history(device_id):
         "device_id": device_id,
         "labels": trend["labels"],
         "counts": trend["counts"],
+        "hourly_labels": hourly["labels"],
+        "hourly_counts": hourly["counts"],
         "history": history
     })
 
