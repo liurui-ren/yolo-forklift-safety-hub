@@ -6,13 +6,25 @@ import sqlite3
 import json
 import os
 import base64
-from datetime import datetime
+from datetime import datetime, timedelta
 
-from config import DB_PATH, HISTORY_LIMIT, TREND_LIMIT, DB_BUSY_TIMEOUT_MS
+from config import DB_PATH, HISTORY_LIMIT, TREND_LIMIT, DB_BUSY_TIMEOUT_MS, LLM_RETRY_INTERVAL_SEC
 
 # 图片存储目录
 IMAGE_DIR = "images/alarms"
+IMAGE_BASE_DIR = os.path.abspath("images")
 os.makedirs(IMAGE_DIR, exist_ok=True)
+
+def _is_safe_image_path(image_path):
+    if not image_path or not isinstance(image_path, str):
+        return False
+    lower = image_path.lower()
+    if lower.startswith("http://") or lower.startswith("https://"):
+        return False
+    abs_path = os.path.abspath(image_path)
+    if abs_path == IMAGE_BASE_DIR:
+        return True
+    return abs_path.startswith(IMAGE_BASE_DIR + os.sep)
 
 
 def get_db_connection():
@@ -89,6 +101,28 @@ def init_db():
             timestamp TEXT
         )
     """)
+
+    # 报警图片描述列（异步生成）
+    try:
+        cursor.execute("ALTER TABLE alarm_images ADD COLUMN description TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE alarm_images ADD COLUMN description_status TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE alarm_images ADD COLUMN description_model TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE alarm_images ADD COLUMN description_updated_at TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE alarm_images ADD COLUMN description_error TEXT")
+    except sqlite3.OperationalError:
+        pass
 
     # 报警会话表（记录每次报警的起止时间和时长）
     cursor.execute("""
@@ -466,13 +500,87 @@ def save_alarm_image(device_id, image_path, timestamp):
     cursor = conn.cursor()
     cursor.execute(
         """
-        INSERT OR IGNORE INTO alarm_images (device_id, image_path, timestamp)
-        VALUES (?, ?, ?)
+        INSERT OR IGNORE INTO alarm_images
+            (device_id, image_path, timestamp, description_status)
+        VALUES (?, ?, ?, ?)
     """,
-        (device_id, image_path, timestamp),
+        (device_id, image_path, timestamp, "pending"),
+    )
+    cursor.execute(
+        """
+        UPDATE alarm_images
+        SET description_status = 'pending'
+        WHERE image_path = ?
+          AND (description_status IS NULL OR description_status = '')
+    """,
+        (image_path,),
     )
     conn.commit()
     conn.close()
+
+
+def mark_alarm_image_description(image_id, description, model_name):
+    """保存报警图片描述"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    cursor.execute(
+        """
+        UPDATE alarm_images
+        SET description = ?,
+            description_status = 'done',
+            description_model = ?,
+            description_updated_at = ?,
+            description_error = NULL
+        WHERE id = ?
+    """,
+        (description, model_name, now_str, image_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def mark_alarm_image_failed(image_id, error_msg, model_name):
+    """记录报警图片描述失败"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    cursor.execute(
+        """
+        UPDATE alarm_images
+        SET description_status = 'failed',
+            description_model = ?,
+            description_updated_at = ?,
+            description_error = ?
+        WHERE id = ?
+    """,
+        (model_name, now_str, error_msg, image_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_pending_alarm_images(limit=10):
+    """获取待生成/可重试的报警图片记录"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    retry_before = datetime.now() - timedelta(seconds=LLM_RETRY_INTERVAL_SEC)
+    retry_before_str = retry_before.strftime("%Y-%m-%d %H:%M:%S")
+    cursor.execute(
+        """
+        SELECT id, device_id, image_path, timestamp, description_status, description_updated_at
+        FROM alarm_images
+        WHERE description_status IS NULL
+           OR description_status = 'pending'
+           OR (description_status = 'failed' AND (description_updated_at IS NULL OR description_updated_at < ?))
+        ORDER BY id ASC
+        LIMIT ?
+    """,
+        (retry_before_str, limit),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
 
 
 def get_device_images(device_id, limit=20):
@@ -481,7 +589,8 @@ def get_device_images(device_id, limit=20):
     cursor = conn.cursor()
     cursor.execute(
         """
-        SELECT id, image_path, timestamp
+        SELECT id, image_path, timestamp,
+               description, description_status, description_model, description_updated_at
         FROM alarm_images
         WHERE device_id = ?
         ORDER BY timestamp DESC
@@ -500,7 +609,8 @@ def get_latest_image(device_id):
     cursor = conn.cursor()
     cursor.execute(
         """
-        SELECT image_path, timestamp
+        SELECT image_path, timestamp,
+               description, description_status, description_model, description_updated_at
         FROM alarm_images
         WHERE device_id = ?
         ORDER BY timestamp DESC
@@ -612,7 +722,13 @@ def get_recent_alarms(limit=5):
         SELECT a.device_id, a.timestamp, a.alarm,
                (SELECT image_path FROM alarm_images ai
                 WHERE ai.device_id = a.device_id
-                ORDER BY ai.timestamp DESC LIMIT 1) as image_path
+                ORDER BY ai.timestamp DESC LIMIT 1) as image_path,
+               (SELECT description FROM alarm_images ai
+                WHERE ai.device_id = a.device_id
+                ORDER BY ai.timestamp DESC LIMIT 1) as image_description,
+               (SELECT description_status FROM alarm_images ai
+                WHERE ai.device_id = a.device_id
+                ORDER BY ai.timestamp DESC LIMIT 1) as image_description_status
         FROM alarms a
         WHERE a.alarm = 1
         ORDER BY a.timestamp DESC

@@ -23,6 +23,7 @@ from flask_socketio import SocketIO
 import db
 import mqtt_client
 from logger import log_event, get_latest_biz_logs, get_logs_by_page
+from llm_client import describe_image
 from config import (
     OFFLINE_CHECK_INTERVAL_SEC,
     OFFLINE_TIMEOUT_SEC,
@@ -34,6 +35,12 @@ from config import (
     AUTH_TOKEN,
     POSITION_UPDATE_INTERVAL_SEC,
     POSITION_MOVE_RANGE,
+    LLM_ENABLED,
+    LLM_PROVIDER,
+    LLM_MODEL,
+    LLM_TIMEOUT_SEC,
+    LLM_MAX_RETRIES,
+    LLM_POLL_INTERVAL_SEC,
 )
 
 app = Flask(__name__)
@@ -215,6 +222,112 @@ def position_broadcast_loop():
 
 # 启动位置推送线程
 socketio.start_background_task(position_broadcast_loop)
+
+
+def _resolve_alarm_image_path(image_path):
+    if not image_path:
+        return None
+    if not db._is_safe_image_path(image_path):
+        return None
+    abs_path = os.path.abspath(image_path)
+    if not os.path.isfile(abs_path):
+        return None
+    return abs_path
+
+
+def alarm_image_description_loop():
+    """
+    后台异步生成报警图片描述
+    """
+    if not LLM_ENABLED:
+        return
+    if (LLM_PROVIDER or "").lower() != "openai":
+        log_event(
+            "ERROR",
+            "llm.provider.unsupported",
+            "ops",
+            "llm",
+            f"Unsupported LLM provider: {LLM_PROVIDER}",
+        )
+        return
+
+    log_event(
+        "INFO",
+        "llm.image.describe.started",
+        "ops",
+        "llm",
+        "Alarm image description loop started",
+        extra={"model": LLM_MODEL, "poll_sec": LLM_POLL_INTERVAL_SEC},
+    )
+
+    while True:
+        try:
+            time.sleep(LLM_POLL_INTERVAL_SEC)
+            pending = db.get_pending_alarm_images(limit=5)
+            for item in pending:
+                image_id = item.get("id")
+                device_id = item.get("device_id")
+                image_path = item.get("image_path")
+
+                abs_path = _resolve_alarm_image_path(image_path)
+                if not abs_path:
+                    db.mark_alarm_image_failed(
+                        image_id,
+                        "Invalid or missing image path",
+                        LLM_MODEL,
+                    )
+                    continue
+
+                description = None
+                last_error = None
+                for _ in range(max(1, LLM_MAX_RETRIES)):
+                    try:
+                        description = describe_image(abs_path)
+                        break
+                    except Exception as exc:
+                        last_error = str(exc)
+                        time.sleep(1)
+
+                if description:
+                    db.mark_alarm_image_description(image_id, description, LLM_MODEL)
+                    log_event(
+                        "INFO",
+                        "llm.image.describe.success",
+                        "biz",
+                        "llm",
+                        "Alarm image description generated",
+                        device_id=device_id,
+                        extra={"image_path": image_path},
+                    )
+                else:
+                    db.mark_alarm_image_failed(
+                        image_id,
+                        last_error or "LLM failed",
+                        LLM_MODEL,
+                    )
+                    log_event(
+                        "ERROR",
+                        "llm.image.describe.failed",
+                        "ops",
+                        "llm",
+                        "Alarm image description failed",
+                        device_id=device_id,
+                        error=last_error or "LLM failed",
+                        extra={"image_path": image_path},
+                    )
+
+        except Exception as e:
+            log_event(
+                "ERROR",
+                "llm.image.describe.loop_failed",
+                "ops",
+                "llm",
+                f"LLM description loop error: {str(e)}",
+            )
+
+
+if LLM_ENABLED:
+    socketio.start_background_task(alarm_image_description_loop)
 
 
 @socketio.on("connect")
@@ -681,6 +794,10 @@ def get_recent_alarms():
             alarm["zone"] = "A区" if pos_y < 500 else "C区"
         else:
             alarm["zone"] = "B区" if pos_y < 500 else "D区"
+
+    for alarm in alarms:
+        alarm["description"] = alarm.pop("image_description", None)
+        alarm["description_status"] = alarm.pop("image_description_status", None)
 
     return jsonify({"alarms": alarms})
 

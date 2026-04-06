@@ -9,6 +9,21 @@ def _get_bool(name, default=False):
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
+def _get_int(name, default=0):
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return int(value.strip())
+    except ValueError:
+        return default
+
+def _get_str(name, default=""):
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip()
+
 # ==============================
 # MQTT 连接配置
 # ==============================
@@ -54,3 +69,15 @@ POSITION_MOVE_RANGE = 20
 # ==============================
 ALLOWED_IMAGE_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp'}
 MAX_IMAGE_SIZE_MB = 16
+
+# ==============================
+# LLM 多模态描述配置
+# ==============================
+LLM_ENABLED = _get_bool("LLM_ENABLED", False)
+LLM_PROVIDER = _get_str("LLM_PROVIDER", "openai")
+LLM_MODEL = _get_str("LLM_MODEL", "gpt-4.1-mini")
+OPENAI_API_KEY = _get_str("OPENAI_API_KEY", "")
+LLM_TIMEOUT_SEC = _get_int("LLM_TIMEOUT_SEC", 20)
+LLM_MAX_RETRIES = _get_int("LLM_MAX_RETRIES", 2)
+LLM_POLL_INTERVAL_SEC = _get_int("LLM_POLL_INTERVAL_SEC", 5)
+LLM_RETRY_INTERVAL_SEC = _get_int("LLM_RETRY_INTERVAL_SEC", 60)
