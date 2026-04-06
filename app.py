@@ -668,16 +668,32 @@ def get_recent_alarms():
     if auth_failed:
         return auth_failed
 
-    limit = int(request.args.get("limit", 5))
+    limit = int(request.args.get("limit", 10))
     alarms = db.get_recent_alarms(limit=limit)
 
-    # 根据坐标计算区域
+    devices = {d["device_id"]: d for d in db.get_all_devices_with_positions()}
+
     for alarm in alarms:
-        # 这里暂时不计算区域，因为没有坐标信息
-        # 后续可以从 device 表获取最新坐标
-        alarm["zone"] = "A区"  # 临时默认值
+        device = devices.get(alarm["device_id"], {})
+        pos_x = device.get("pos_x", 0) or 0
+        pos_y = device.get("pos_y", 0) or 0
+        if pos_x < 600:
+            alarm["zone"] = "A区" if pos_y < 500 else "C区"
+        else:
+            alarm["zone"] = "B区" if pos_y < 500 else "D区"
 
     return jsonify({"alarms": alarms})
+
+
+@app.route("/api/dashboard/alarm-trend")
+def get_dashboard_alarm_trend():
+    """Dashboard 报警趋势：今日/昨日每小时报警次数（全设备）"""
+    auth_failed = require_auth()
+    if auth_failed:
+        return auth_failed
+
+    trend = db.get_alarm_hourly_today_yesterday()
+    return jsonify(trend)
 
 
 @app.route("/api/device/<device_id>/alarm-sessions")

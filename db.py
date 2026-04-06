@@ -393,6 +393,73 @@ def get_device_alarm_hourly_today(device_id):
     return {"labels": labels, "counts": counts}
 
 
+def get_alarm_hourly_today_yesterday():
+    """
+    缁熻鎵€鏈夎澶囩殑鈥滀粖澶? / 鏄ㄥぉ姣忓皬鏃舵姤璀︽鏁扳€濓紙鏈湴鏃堕棿锛夈€?
+    Return 24-hour arrays for today and yesterday (local time) across all devices.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    # 浠婃棩姣忓皬鏃?
+    cursor.execute(
+        """
+        SELECT
+            strftime('%H', timestamp) AS hour,
+            COUNT(*) AS alarm_count
+        FROM alarms
+        WHERE alarm = 1
+          AND date(timestamp) = date('now', 'localtime')
+        GROUP BY hour
+        ORDER BY hour ASC
+    """
+    )
+    today_rows = cursor.fetchall()
+
+    # 鏄ㄥぉ姣忓皬鏃?
+    cursor.execute(
+        """
+        SELECT
+            strftime('%H', timestamp) AS hour,
+            COUNT(*) AS alarm_count
+        FROM alarms
+        WHERE alarm = 1
+          AND date(timestamp) = date('now', 'localtime', '-1 day')
+        GROUP BY hour
+        ORDER BY hour ASC
+    """
+    )
+    yesterday_rows = cursor.fetchall()
+
+    conn.close()
+
+    labels = [f"{h:02d}:00" for h in range(24)]
+    today_counts = [0 for _ in range(24)]
+    yesterday_counts = [0 for _ in range(24)]
+
+    for row in today_rows:
+        try:
+            hour_idx = int(row["hour"])
+        except (TypeError, ValueError):
+            continue
+        if 0 <= hour_idx <= 23:
+            today_counts[hour_idx] = int(row["alarm_count"] or 0)
+
+    for row in yesterday_rows:
+        try:
+            hour_idx = int(row["hour"])
+        except (TypeError, ValueError):
+            continue
+        if 0 <= hour_idx <= 23:
+            yesterday_counts[hour_idx] = int(row["alarm_count"] or 0)
+
+    return {
+        "labels": labels,
+        "today_counts": today_counts,
+        "yesterday_counts": yesterday_counts,
+    }
+
+
 def save_alarm_image(device_id, image_path, timestamp):
     """保存报警图片记录到数据库"""
     conn = get_db_connection()
