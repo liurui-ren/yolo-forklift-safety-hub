@@ -392,7 +392,7 @@ def index():
     if _vue_dist_ready():
         resp = make_response(send_from_directory(VUE_DIST_DIR, "index.html"))
         return _attach_auth_cookie(resp)
-    return render_template("dashboard.html", app_auth_token=AUTH_TOKEN)
+    abort(404)
 
 
 @app.route("/devices")
@@ -401,7 +401,7 @@ def devices_page():
     if _vue_dist_ready():
         resp = make_response(send_from_directory(VUE_DIST_DIR, "index.html"))
         return _attach_auth_cookie(resp)
-    return render_template("devices.html", app_auth_token=AUTH_TOKEN)
+    abort(404)
 
 
 @app.route("/logs")
@@ -410,8 +410,18 @@ def logs_page():
     if _vue_dist_ready():
         resp = make_response(send_from_directory(VUE_DIST_DIR, "index.html"))
         return _attach_auth_cookie(resp)
-    return render_template("logs.html", app_auth_token=AUTH_TOKEN)
+    abort(404)
 
+
+
+
+@app.route("/trend")
+def trend_page():
+    """返回Vue前端的index.html"""
+    if _vue_dist_ready():
+        resp = make_response(send_from_directory(VUE_DIST_DIR, "index.html"))
+        return _attach_auth_cookie(resp)
+    abort(404)
 
 @app.route("/assets/<path:path>")
 def serve_assets(path):
@@ -432,7 +442,7 @@ def serve_vite_svg():
 # @app.route("/DashboardLegacy.png")
 def serve_dashboard_png():
     """提供Dashboard背景图片"""
-    return send_from_directory("static", "Dashboard.png")
+    return send_from_directory(app.root_path, "map.jpg")
 
 
 @app.route("/api/latest")
@@ -749,13 +759,13 @@ def upload_image():
         return jsonify({"error": f"图片上传失败: {str(e)}"}), 500
 
 
-@app.route("/Dashboard.png")
+@app.route("/map.jpg")
 def serve_dashboard_map():
     """提供工厂地图图片"""
     # 移除 require_auth()，允许 ECharts 直接通过 URL 加载图片
     # 或者如果需要鉴权，前端 ECharts 必须支持带 Header 的图片请求（较复杂）
     # 为方便 Dashboard 显示，此处暂不设置鉴权
-    return send_from_directory("static", "Dashboard.png")
+    return send_from_directory("static", "map.jpg")
 
 
 # =========================
@@ -841,6 +851,46 @@ def get_device_alarm_sessions(device_id):
         }
     )
 
+@app.route('/api/trend')
+def trend():
+    import random
+    from flask import request, jsonify
+
+    auth_failed = require_auth()
+    if auth_failed:
+        return auth_failed
+
+    t = request.args.get('type', 'day')
+
+    # ===== 时间轴 =====
+    if t == 'day':
+        labels = [f"{i}:00" for i in range(24)]
+    elif t == 'week':
+        labels = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun']
+    else:
+        labels = [str(i+1) for i in range(30)]
+
+    # ===== 模拟 publish_test 的报警逻辑 =====
+    def gen():
+        state = 0
+        data = []
+        for _ in labels:
+            if state == 1:
+                state = 1 if random.random() < 0.7 else 0
+            else:
+                state = 1 if random.random() < 0.15 else 0
+
+            val = random.randint(1, 3) if state == 1 else random.randint(0, 1)
+            data.append(val)
+        return data
+
+    return jsonify({
+        "labels": labels,
+        "fork1": gen(),
+        "fork2": gen(),
+        "fork3": gen()
+    })
+
 
 if __name__ == "__main__":
     log_event(
@@ -848,3 +898,6 @@ if __name__ == "__main__":
     )
     print("Starting Flask + SocketIO app on http://0.0.0.0:5000")
     socketio.run(app, host="0.0.0.0", port=5000, debug=False)
+
+
+

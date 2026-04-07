@@ -15,10 +15,11 @@ export default defineConfig({
         target: 'http://localhost:5000',
         changeOrigin: true
       },
-      '/Dashboard.png': {
+      '/map.jpg': {
         target: 'http://localhost:5000',
         changeOrigin: true
       }
     }
   }
 })
+
