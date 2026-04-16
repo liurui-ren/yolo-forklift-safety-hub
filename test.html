@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>叉车安全监控系统 - 工厂平面图</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background-color: #f5f5f5; }
+        h1 { color: #333; text-align: center; margin-bottom: 30px; }
+        .container { max-width: 1920px; margin: 0 auto; }
+        .map-container { position: relative; width: 100%; height: 1080px; border: 1px solid #ddd; border-radius: 8px; overflow: hidden; margin: 20px 0; }
+        .map-image { width: 100%; height: 100%; object-fit: cover; }
+        .forklift { position: absolute; width: 30px; height: 30px; border-radius: 50%; background-color: #007bff; color: white; display: flex; align-items: center; justify-content: center; font-weight: bold; transition: all 0.3s ease; z-index: 10; }
+        .person { position: absolute; width: 20px; height: 20px; border-radius: 50%; background-color: #ff4757; color: white; display: flex; align-items: center; justify-content: center; font-weight: bold; transition: all 0.3s ease; z-index: 5; }
+        .info-panel { background-color: white; border-radius: 8px; padding: 20px; margin: 20px 0; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .info-item { margin: 10px 0; display: inline-block; margin-right: 30px; }
+        .info-label { font-weight: bold; margin-right: 10px; }
+        .test-link { display: inline-block; margin: 10px; padding: 10px 20px; background-color: #007bff; color: white; text-decoration: none; border-radius: 5px; }
+        .test-link:hover { background-color: #0069d9; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>叉车安全监控系统 - 工厂平面图</h1>
+        <div class="info-panel">
+            <div class="info-item"><span class="info-label">状态:</span> <span id="status">加载中...</span></div>
+            <div class="info-item"><span class="info-label">叉车数量:</span> <span id="forklift-count">0</span></div>
+            <div class="info-item"><span class="info-label">行人数量:</span> <span id="person-count">0</span></div>
+            <div class="info-item"><span class="info-label">更新时间:</span> <span id="last-update">-</span></div>
+        </div>
+        <div class="map-container">
+            <img src="map.jpg" class="map-image" alt="工厂平面图">
+            <div id="entities"></div>
+        </div>
+        <div>
+            <a href="api/scene/debug" class="test-link">场景数据 (场景管理API)</a>
+            <a href="map.jpg" class="test-link">工厂平面图</a>
+        </div>
+    </div>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <script>
+        // 连接WebSocket
+        const socket = io('http://127.0.0.1:5000', { auth: { token: 'test-token' } });
+        
+        socket.on('connect', () => {
+            document.getElementById('status').textContent = '已连接';
+            console.log('WebSocket connected');
+        });
+        
+        socket.on('disconnect', () => {
+            document.getElementById('status').textContent = '已断开';
+            console.log('WebSocket disconnected');
+        });
+        
+        socket.on('scene_update', (data) => {
+            if (data) {
+                updateEntities(data);
+                document.getElementById('forklift-count').textContent = data.forklifts ? data.forklifts.length : 0;
+                document.getElementById('person-count').textContent = data.persons ? data.persons.length : 0;
+                document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
+            }
+        });
+        
+        function updateEntities(data) {
+            const entitiesContainer = document.getElementById('entities');
+            entitiesContainer.innerHTML = '';
+            
+            // 绘制行人
+            if (data.persons) {
+                data.persons.forEach(person => {
+                    const personElement = document.createElement('div');
+                    personElement.className = 'person';
+                    personElement.textContent = `P${person.id}`;
+                    
+                    // 计算位置（地图尺寸为1920x1080）
+                    const mapWidth = 1920;
+                    const mapHeight = 1080;
+                    const containerWidth = entitiesContainer.parentElement.clientWidth;
+                    const containerHeight = entitiesContainer.parentElement.clientHeight;
+                    
+                    const scaleX = containerWidth / mapWidth;
+                    const scaleY = containerHeight / mapHeight;
+                    
+                    const x = (person.x * scaleX) - 10; // 10是行人元素的一半宽度
+                    const y = (person.y * scaleY) - 10; // 10是行人元素的一半高度
+                    
+                    personElement.style.left = `${x}px`;
+                    personElement.style.top = `${y}px`;
+                    
+                    entitiesContainer.appendChild(personElement);
+                });
+            }
+            
+            // 绘制叉车
+            if (data.forklifts) {
+                data.forklifts.forEach(forklift => {
+                    const forkliftElement = document.createElement('div');
+                    forkliftElement.className = 'forklift';
+                    forkliftElement.textContent = `FL${forklift.id}`;
+                    
+                    // 计算位置（地图尺寸为1920x1080）
+                    const mapWidth = 1920;
+                    const mapHeight = 1080;
+                    const containerWidth = entitiesContainer.parentElement.clientWidth;
+                    const containerHeight = entitiesContainer.parentElement.clientHeight;
+                    
+                    const scaleX = containerWidth / mapWidth;
+                    const scaleY = containerHeight / mapHeight;
+                    
+                    const x = (forklift.x * scaleX) - 15; // 15是叉车元素的一半宽度
+                    const y = (forklift.y * scaleY) - 15; // 15是叉车元素的一半高度
+                    
+                    forkliftElement.style.left = `${x}px`;
+                    forkliftElement.style.top = `${y}px`;
+                    
+                    entitiesContainer.appendChild(forkliftElement);
+                });
+            }
+        }
+        
+        // 初始加载场景数据
+        fetch('http://127.0.0.1:5000/api/scene/debug')
+            .then(response => response.json())
+            .then(data => {
+                if (data) {
+                    updateEntities(data);
+                    document.getElementById('forklift-count').textContent = data.forklifts ? data.forklifts.length : 0;
+                    document.getElementById('person-count').textContent = data.persons ? data.persons.length : 0;
+                    document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
+                    document.getElementById('status').textContent = '已加载';
+                }
+            })
+            .catch(error => {
+                console.error('Error loading scene data:', error);
+                document.getElementById('status').textContent = '加载失败';
+            });
+    </script>
+</body>
+</html>
