@@ -10,28 +10,19 @@
                 <span class="kpi-label">设备总数</span>
                 <span class="kpi-value kpi-total">{{ totalDevices }}</span>
               </div>
-              <div class="kpi-item kpi-clickable" @click="toggleForkDetail">
+              <div class="kpi-item kpi-clickable" @click.stop="toggleForkDetail">
                 <span class="kpi-label">在线</span>
                 <span class="kpi-value kpi-online">{{ onlineDevices }}</span>
-                <transition name="fork-detail">
-                  <div v-if="showForkDetail" class="fork-detail-popup" @click.stop>
-                    <div
-                      v-for="fork in onlineForkList"
-                      :key="fork.device_id"
-                      class="fork-detail-row"
-                    >
-                      <div class="fork-detail-left">
-                        <span class="fork-detail-name">{{ fork.device_id }}</span>
-                        <span class="fork-detail-zone">{{ getZoneName(fork.pos_x || 0, fork.pos_y || 0) }}</span>
-                      </div>
-                      <span class="fork-detail-pos">({{ fork.pos_x?.toFixed(0) }}, {{ fork.pos_y?.toFixed(0) }})</span>
-                      <span class="fork-detail-status" :class="{ alarming: fork.alarm_status >= 1 }">
-                        {{ fork.alarm_status >= 2 ? '报警' : fork.alarm_status === 1 ? '警告' : '正常' }}
-                      </span>
+                <div v-if="showForkDetail" class="fork-detail-popup" @click.stop>
+                  <div v-for="fork in onlineForklifts" :key="fork.device_id" class="fork-detail-row">
+                    <div class="fork-detail-left">
+                      <span class="fork-detail-name">{{ fork.device_id }}</span>
+                      <span class="fork-detail-zone">{{ getZoneName(fork.pos_x || 0, fork.pos_y || 0) }}</span>
                     </div>
-                    <div v-if="onlineForkList.length === 0" class="fork-detail-empty">暂无在线叉车</div>
+                    <span class="fork-detail-pos">({{ Math.round(fork.pos_x || 0) }}, {{ Math.round(fork.pos_y || 0) }})</span>
                   </div>
-                </transition>
+                  <div v-if="onlineForklifts.length === 0" class="fork-detail-empty">暂无在线叉车</div>
+                </div>
               </div>
               <div class="kpi-item">
                 <span class="kpi-label">报警</span>
@@ -55,8 +46,6 @@
                 <span class="legend-item"><span class="legend-dot normal"></span>正常</span>
                 <span class="legend-item"><span class="legend-dot alarm"></span>报警</span>
                 <span class="legend-item"><span class="legend-dot offline"></span>离线</span>
-                <span class="legend-item"><span class="legend-fork"></span>叉车</span>
-                <span class="legend-item"><span class="legend-person"></span>行人</span>
               </div>
             </div>
           </div>
@@ -126,6 +115,10 @@
           <div v-else class="no-image">暂无图片</div>
           <div class="alarm-detail-panel" v-if="selectedAlarm">
             <div class="alarm-detail-row">
+              <span class="detail-label">事件时间</span>
+              <span class="detail-value">{{ formatAbsoluteTime(selectedAlarm.timestamp) }}</span>
+            </div>
+            <div class="alarm-detail-row">
               <span class="detail-label">报警结果</span>
               <span class="detail-value">
                 <span class="alarm-result-badge" :class="getAlarmResultClass(selectedAlarm)">
@@ -137,11 +130,24 @@
               <span class="detail-label">报警原因</span>
               <span class="detail-value">{{ getAlarmReason(selectedAlarm) }}</span>
             </div>
+            <div class="alarm-detail-row is-block">
+              <span class="detail-label">风险说明</span>
+              <p class="detail-analysis">{{ getRiskDescription(selectedAlarm) }}</p>
+            </div>
             <div class="alarm-detail-row">
               <span class="detail-label">AI分析</span>
               <p class="detail-analysis" :class="{ pending: isAnalysisPending(selectedAlarm), failed: isAnalysisFailed(selectedAlarm) }">
                 {{ getAnalysisText(selectedAlarm) }}
               </p>
+            </div>
+            <div class="alarm-detail-row is-block">
+              <span class="detail-label">操作入口</span>
+              <div class="detail-actions">
+                <button type="button" class="detail-action-btn" @click="triggerAlarmAction('已标记为待跟进，后续可接真实处置流。')">标记已跟进</button>
+                <button type="button" class="detail-action-btn" @click="triggerAlarmAction('已预留通知入口，后续可接短信或企业微信。')">通知负责人</button>
+                <button type="button" class="detail-action-btn" @click="triggerAlarmAction('已预留复盘入口，当前先作为 UI 占位按钮。')">发起复盘</button>
+              </div>
+              <p v-if="alarmActionFeedback" class="detail-action-feedback">{{ alarmActionFeedback }}</p>
             </div>
           </div>
         </div>
@@ -162,81 +168,74 @@ const mapChart = ref(null)
 const devices = ref([])
 const alarmList = ref([])
 const mapMeta = ref('数据加载中...')
-
-const totalDevices = computed(() => devices.value.filter(d => d.device_id.startsWith('FORK-')).length)
-const onlineDevices = computed(() => devices.value.filter(d => d.device_id.startsWith('FORK-') && (d.online_status === 1 || forkMovementData.value[d.device_id])).length)
-const alarmDevices = computed(() => devices.value.filter(d => d.device_id.startsWith('FORK-') && (d.online_status === 1 || forkMovementData.value[d.device_id]) && d.alarm_status >= 1).length)
-const onlineForkList = computed(() => devices.value.filter(d => d.device_id.startsWith('FORK-') && (d.online_status === 1 || forkMovementData.value[d.device_id])))
 const showForkDetail = ref(false)
 
-function toggleForkDetail() {
-  showForkDetail.value = !showForkDetail.value
-}
+const totalDevices = computed(() => {
+  const forkIds = ['FORK-001', 'FORK-002', 'FORK-003']
+  return forkIds.length
+})
+const onlineDevices = computed(() => onlineForklifts.value.length)
+const alarmDevices = computed(() => {
+  return Object.values(forkAlarmStatus).filter(v => v >= 1).length
+})
+const onlineForklifts = computed(() => {
+  const forkIds = ['FORK-001', 'FORK-002', 'FORK-003']
+  return forkIds.map(id => forkPositions.value[id]).filter(Boolean)
+})
 
 const chartLabels = ref(Array.from({ length: 24 }, (_, i) => `${i}:00`))
 const chartSeries = ref([])
 
 const showImageModal = ref(false)
 const selectedAlarm = ref(null)
+const alarmActionFeedback = ref('')
 const DASHBOARD_MAP_URL = '/Dashboard.png'
 
 let mapChartInstance = null
 const MAP_COORD_WIDTH = 1920
 const MAP_COORD_HEIGHT = 1080
-const MAP_MARKER_OUTER_SIZE = 42
-const MAP_MARKER_MIDDLE_SIZE = 32
-const MAP_MARKER_INNER_SIZE = 22
 
-const C = {
-  text: '#5c5678',
-  textSec: '#9890b0',
-  purple: '#b8a9e8',
-  green: '#a8e6cf',
-  red: '#f0a0a0',
-  offline: '#b0a8c8',
-  warning: '#FFD700',
-}
-
-const persons = ref([
-  { id: 'P001', name: '行人A', pos_x: 300, pos_y: 300, speed: 1, direction: Math.random() * Math.PI * 2 },
-  { id: 'P002', name: '行人B', pos_x: 800, pos_y: 600, speed: 1.2, direction: Math.random() * Math.PI * 2 },
-  { id: 'P003', name: '行人C', pos_x: 1200, pos_y: 400, speed: 0.8, direction: Math.random() * Math.PI * 2 },
-])
-
-const forkMovementData = ref({
-  'FORK-001': {
-    path: [
-      [630, 760], [630, 150], [150, 150], [150, 760], [630, 760],
-    ],
-    speed: 1.5,
-  },
-  'FORK-002': {
-    path: [
-      [630, 760], [1417, 760], [1417, 950], [630, 950], [630, 760],
-    ],
-    speed: 1.8,
-  },
-  'FORK-003': {
-    path: [
-      [630, 760], [1417, 760], [1417, 150], [630, 150], [630, 760],
-    ],
-    speed: 2,
-  },
-})
-
-const forkStates = ref({
-  'FORK-001': { x: 630, y: 760, currentPoint: 0, direction: 0 },
-  'FORK-002': { x: 630, y: 760, currentPoint: 0, direction: 0 },
-  'FORK-003': { x: 630, y: 760, currentPoint: 0, direction: 0 },
-})
-
-const FORK_COLOR = '#3498db'
-const PERSON_COLOR = '#2ecc71'
-const WARNING_INNER_COLOR = 'rgba(255, 0, 0, 0.3)'
-const WARNING_OUTER_COLOR = 'rgba(255, 200, 0, 0.3)'
 const ALARM_DISTANCE = 60
 const WARN_DISTANCE = 100
+const ALARM_EXPIRE_MS = 3 * 60 * 1000
+const MAX_ALARM_LIST = 30
 let coordScale = 0.4
+
+const FORK_COLOR = '#3498db'
+const PERSON_COLOR = '#e67e22'
+
+const forkPositions = ref({})
+const forkAlarmStatus = {}
+const prevAlarmStatus = ref({})
+const alarmReasons = {}
+const personPositions = ref({})
+
+const FORK_ROUTES = {
+  'FORK-001': {
+    waypoints: [[350, 350], [800, 350], [800, 850], [350, 850]],
+    speed: 1.2,
+    progress: 0,
+    segment: 0,
+  },
+  'FORK-002': {
+    waypoints: [[350, 500], [1200, 500], [1200, 850], [350, 850]],
+    speed: 1.0,
+    progress: 0,
+    segment: 0,
+  },
+  'FORK-003': {
+    waypoints: [[800, 350], [1417, 350], [1417, 760], [800, 760]],
+    speed: 0.9,
+    progress: 0,
+    segment: 0,
+  },
+}
+
+const PERSON_CONFIGS = [
+  { id: 'PERSON-001', x: 500, y: 400, vx: 0.6, vy: 0.3 },
+  { id: 'PERSON-002', x: 1000, y: 600, vx: -0.4, vy: 0.5 },
+  { id: 'PERSON-003', x: 700, y: 700, vx: 0.3, vy: -0.6 },
+]
 
 function getZoneName(x, y) {
   if (x < 350) return '大道'
@@ -249,6 +248,171 @@ function getZoneName(x, y) {
     return '散货存放区'
   }
   return '货车装载区'
+}
+
+function toggleForkDetail() {
+  showForkDetail.value = !showForkDetail.value
+}
+
+function initForklifts() {
+  Object.keys(FORK_ROUTES).forEach(id => {
+    const route = FORK_ROUTES[id]
+    const wp = route.waypoints[0]
+    forkPositions.value[id] = {
+      device_id: id,
+      pos_x: wp[0],
+      pos_y: wp[1],
+      online_status: 1,
+      alarm_status: 0,
+    }
+    forkAlarmStatus[id] = 0
+  })
+  PERSON_CONFIGS.forEach(cfg => {
+    personPositions.value[cfg.id] = {
+      device_id: cfg.id,
+      pos_x: cfg.x,
+      pos_y: cfg.y,
+      online_status: 1,
+      alarm_status: 0,
+    }
+  })
+}
+
+function updateForkPositions() {
+  const forkIds = Object.keys(FORK_ROUTES)
+  forkIds.forEach(id => {
+    const route = FORK_ROUTES[id]
+    const wp = route.waypoints
+    const seg = route.segment % wp.length
+    const nextSeg = (route.segment + 1) % wp.length
+    const from = wp[seg]
+    const to = wp[nextSeg]
+    const dx = to[0] - from[0]
+    const dy = to[1] - from[1]
+    const dist = Math.sqrt(dx * dx + dy * dy)
+    const step = route.speed / dist
+
+    route.progress += step
+    if (route.progress >= 1) {
+      route.progress = 0
+      route.segment = (route.segment + 1) % wp.length
+    }
+
+    const cx = from[0] + dx * route.progress
+    const cy = from[1] + dy * route.progress
+    forkPositions.value[id] = {
+      device_id: id,
+      pos_x: cx,
+      pos_y: cy,
+      online_status: 1,
+      alarm_status: 0,
+    }
+  })
+
+  PERSON_CONFIGS.forEach(cfg => {
+    const p = personPositions.value[cfg.id]
+    if (!p) return
+    p.pos_x += cfg.vx + (Math.random() - 0.5) * 0.8
+    p.pos_y += cfg.vy + (Math.random() - 0.5) * 0.8
+    if (p.pos_x < 100 || p.pos_x > 1800) cfg.vx *= -1
+    if (p.pos_y < 100 || p.pos_y > 1000) cfg.vy *= -1
+    p.pos_x = Math.max(50, Math.min(1870, p.pos_x))
+    p.pos_y = Math.max(50, Math.min(1030, p.pos_y))
+  })
+
+  forkIds.forEach(fid => {
+    const fp = forkPositions.value[fid]
+    if (!fp) return
+    let minDist = Infinity
+    let closestReason = ''
+
+    Object.keys(personPositions.value).forEach(pid => {
+      const pp = personPositions.value[pid]
+      if (!pp) return
+      const d = Math.sqrt((fp.pos_x - pp.pos_x) ** 2 + (fp.pos_y - pp.pos_y) ** 2)
+      if (d < minDist) {
+        minDist = d
+        closestReason = '人和叉车距离过近'
+      }
+    })
+
+    forkIds.forEach(otherId => {
+      if (otherId === fid) return
+      const op = forkPositions.value[otherId]
+      if (!op) return
+      const d = Math.sqrt((fp.pos_x - op.pos_x) ** 2 + (fp.pos_y - op.pos_y) ** 2)
+      if (d < minDist) {
+        minDist = d
+        closestReason = '叉车间距离过近'
+      }
+    })
+
+    const prev = forkAlarmStatus[fid] || 0
+    if (minDist < ALARM_DISTANCE) {
+      forkAlarmStatus[fid] = 2
+      fp.alarm_status = 2
+      alarmReasons[fid] = closestReason
+    } else if (minDist < WARN_DISTANCE) {
+      forkAlarmStatus[fid] = 1
+      fp.alarm_status = 1
+      alarmReasons[fid] = closestReason
+    } else {
+      forkAlarmStatus[fid] = 0
+      fp.alarm_status = 0
+    }
+
+    const now = new Date()
+    const nowStr = now.getFullYear() + '-' +
+      String(now.getMonth() + 1).padStart(2, '0') + '-' +
+      String(now.getDate()).padStart(2, '0') + ' ' +
+      String(now.getHours()).padStart(2, '0') + ':' +
+      String(now.getMinutes()).padStart(2, '0') + ':' +
+      String(now.getSeconds()).padStart(2, '0')
+
+    if (forkAlarmStatus[fid] >= 1 && prev < 1) {
+      const zone = getZoneName(fp.pos_x || 0, fp.pos_y || 0)
+      alarmList.value.unshift({
+        device_id: fid,
+        timestamp: nowStr,
+        alarm: 1,
+        zone: zone,
+        reason: alarmReasons[fid] || '人和叉车距离过近',
+        image_path: null,
+        description: null,
+        description_status: null,
+        _clientGenerated: true,
+      })
+      if (alarmList.value.length > MAX_ALARM_LIST) {
+        alarmList.value = alarmList.value.slice(0, MAX_ALARM_LIST)
+      }
+    } else if (forkAlarmStatus[fid] === 0 && prev >= 1) {
+      const zone = getZoneName(fp.pos_x || 0, fp.pos_y || 0)
+      alarmList.value.unshift({
+        device_id: fid,
+        timestamp: nowStr,
+        alarm: 0,
+        zone: zone,
+        reason: '已恢复安全距离',
+        image_path: null,
+        description: null,
+        description_status: null,
+        _clientGenerated: true,
+      })
+      if (alarmList.value.length > MAX_ALARM_LIST) {
+        alarmList.value = alarmList.value.slice(0, MAX_ALARM_LIST)
+      }
+    }
+    prevAlarmStatus.value[fid] = forkAlarmStatus[fid]
+  })
+}
+
+const C = {
+  text: '#5c5678',
+  textSec: '#9890b0',
+  purple: '#b8a9e8',
+  green: '#a8e6cf',
+  red: '#f0a0a0',
+  offline: '#b0a8c8',
 }
 
 async function fetchAlarmTrend() {
@@ -284,199 +448,69 @@ async function fetchAlarmTrend() {
 }
 
 function buildMapPointData() {
-  return devices.value.map(dev => {
-    let color = C.offline
-    let statusText = '离线'
-    if (dev.online_status === 1) {
-      if (dev.alarm_status >= 2) {
-        color = C.red
-        statusText = '报警'
-      } else if (dev.alarm_status === 1) {
-        color = '#f39c12'
-        statusText = '警告'
-      } else {
-        color = C.green
-        statusText = '正常'
-      }
-    }
+  const forkIds = Object.keys(FORK_ROUTES)
+  const forkDisplayData = forkIds.map(id => {
+    const fp = forkPositions.value[id]
+    if (!fp) return null
+    let color = FORK_COLOR
+    if (fp.alarm_status === 2) color = C.red
+    else if (fp.alarm_status === 1) color = '#f0c040'
     return {
-      name: dev.device_id,
-      value: [dev.pos_x || 0, dev.pos_y || 0],
+      name: id,
+      value: [fp.pos_x, fp.pos_y],
       itemStyle: { color },
-      statusText,
-      lastSeen: dev.last_seen || '-',
+      symbol: 'path://M0,-8 L6,6 L-6,6 Z',
+      symbolSize: 8,
     }
-  })
-}
+  }).filter(Boolean)
 
-function updateForkPositions() {
-  const forkIds = Object.keys(forkMovementData.value)
-
-  forkIds.forEach(deviceId => {
-    const movement = forkMovementData.value[deviceId]
-    const state = forkStates.value[deviceId]
-    if (!movement || !state) return
-
-    const path = movement.path
-    const nextIdx = (state.currentPoint + 1) % path.length
-    const nextPoint = path[nextIdx]
-
-    const dx = nextPoint[0] - state.x
-    const dy = nextPoint[1] - state.y
-    const distToNext = Math.sqrt(dx * dx + dy * dy)
-
-    if (distToNext < movement.speed) {
-      state.x = nextPoint[0]
-      state.y = nextPoint[1]
-      state.currentPoint = nextIdx
-      const afterNextIdx = (nextIdx + 1) % path.length
-      const afterNext = path[afterNextIdx]
-      state.direction = Math.atan2(afterNext[1] - nextPoint[1], afterNext[0] - nextPoint[0]) * 180 / Math.PI
-    } else {
-      state.x += (dx / distToNext) * movement.speed
-      state.y += (dy / distToNext) * movement.speed
-      state.direction = Math.atan2(dy, dx) * 180 / Math.PI
-    }
-  })
-
-  forkIds.forEach(id => {
-    const dev = devices.value.find(d => d.device_id === id)
-    const state = forkStates.value[id]
-    if (dev && state) {
-      dev.pos_x = state.x
-      dev.pos_y = state.y
-      dev.online_status = 1
-      dev.alarm_status = 0
-    }
-  })
-
-  for (let i = 0; i < forkIds.length; i++) {
-    for (let j = i + 1; j < forkIds.length; j++) {
-      const si = forkStates.value[forkIds[i]]
-      const sj = forkStates.value[forkIds[j]]
-      const dx = si.x - sj.x
-      const dy = si.y - sj.y
-      const dist = Math.sqrt(dx * dx + dy * dy)
-      if (dist < ALARM_DISTANCE) {
-        const di = devices.value.find(d => d.device_id === forkIds[i])
-        const dj = devices.value.find(d => d.device_id === forkIds[j])
-        if (di) di.alarm_status = 2
-        if (dj) dj.alarm_status = 2
-      } else if (dist < WARN_DISTANCE) {
-        const di = devices.value.find(d => d.device_id === forkIds[i])
-        const dj = devices.value.find(d => d.device_id === forkIds[j])
-        if (di && di.alarm_status < 1) di.alarm_status = 1
-        if (dj && dj.alarm_status < 1) dj.alarm_status = 1
-      }
-    }
-  }
-
-  forkIds.forEach(id => {
-    const si = forkStates.value[id]
-    persons.value.forEach(person => {
-      const dx = person.pos_x - si.x
-      const dy = person.pos_y - si.y
-      const dist = Math.sqrt(dx * dx + dy * dy)
-      if (dist < ALARM_DISTANCE) {
-        const dev = devices.value.find(d => d.device_id === id)
-        if (dev) dev.alarm_status = 2
-      } else if (dist < WARN_DISTANCE) {
-        const dev = devices.value.find(d => d.device_id === id)
-        if (dev && dev.alarm_status < 1) dev.alarm_status = 1
-      }
-    })
-  })
-}
-
-function updatePersonPositions() {
-  persons.value.forEach(person => {
-    if (Math.random() < 0.02) {
-      person.direction += (Math.random() - 0.5) * Math.PI
-    }
-
-    person.pos_x += Math.cos(person.direction) * person.speed
-    person.pos_y += Math.sin(person.direction) * person.speed
-
-    if (person.pos_x <= 50 || person.pos_x >= MAP_COORD_WIDTH - 50) {
-      person.direction = Math.PI - person.direction
-      person.pos_x = Math.max(50, Math.min(MAP_COORD_WIDTH - 50, person.pos_x))
-    }
-    if (person.pos_y <= 50 || person.pos_y >= MAP_COORD_HEIGHT - 50) {
-      person.direction = -person.direction
-      person.pos_y = Math.max(50, Math.min(MAP_COORD_HEIGHT - 50, person.pos_y))
-    }
-  })
-}
-
-function buildForkData() {
-  return Object.keys(forkMovementData.value).map(deviceId => {
-    const state = forkStates.value[deviceId]
-    return {
-      name: deviceId,
-      value: [state.x, state.y],
-      entityType: 'fork',
-      rotation: state.direction,
-    }
-  })
-}
-
-function buildPersonData() {
-  return persons.value.map(person => ({
-    name: person.name,
-    value: [person.pos_x, person.pos_y],
-    entityType: 'person',
+  const personData = Object.values(personPositions.value).map(p => ({
+    name: p.device_id,
+    value: [p.pos_x, p.pos_y],
+    itemStyle: { color: PERSON_COLOR },
+    symbol: 'circle',
+    symbolSize: 6,
   }))
+
+  const warningOuterData = forkIds.map(id => {
+    const fp = forkPositions.value[id]
+    if (!fp) return null
+    return {
+      name: id + '_warn',
+      value: [fp.pos_x, fp.pos_y],
+      itemStyle: { color: 'rgba(240, 192, 64, 0.12)' },
+      symbol: 'circle',
+      symbolSize: WARN_DISTANCE * 2 * coordScale,
+    }
+  }).filter(Boolean)
+
+  const warningInnerData = forkIds.map(id => {
+    const fp = forkPositions.value[id]
+    if (!fp) return null
+    return {
+      name: id + '_alarm',
+      value: [fp.pos_x, fp.pos_y],
+      itemStyle: { color: 'rgba(240, 96, 96, 0.10)' },
+      symbol: 'circle',
+      symbolSize: ALARM_DISTANCE * 2 * coordScale,
+    }
+  }).filter(Boolean)
+
+  return { forkDisplayData, personData, warningOuterData, warningInnerData }
 }
 
 function updateMap() {
   if (!mapChartInstance) return
-
+  updateMapLayout()
   updateForkPositions()
-  updatePersonPositions()
 
-  const forkData = buildForkData()
-  const personData = buildPersonData()
-  const warningOuterData = forkData.map(d => {
-    const dev = devices.value.find(dd => dd.device_id === d.name)
-    const alarmLevel = dev ? dev.alarm_status : 0
-    let color = WARNING_OUTER_COLOR
-    if (alarmLevel === 2) color = 'rgba(255, 200, 0, 0.55)'
-    else if (alarmLevel === 1) color = 'rgba(255, 200, 0, 0.4)'
-    return {
-      ...d,
-      value: d.value,
-      itemStyle: { color },
-    }
-  })
-  const warningInnerData = forkData.map(d => {
-    const dev = devices.value.find(dd => dd.device_id === d.name)
-    const alarmLevel = dev ? dev.alarm_status : 0
-    let color = WARNING_INNER_COLOR
-    if (alarmLevel === 2) color = 'rgba(255, 0, 0, 0.5)'
-    else if (alarmLevel === 1) color = 'rgba(255, 150, 0, 0.35)'
-    return {
-      ...d,
-      value: d.value,
-      itemStyle: { color },
-    }
-  })
-
-  const forkDisplayData = forkData.map(d => {
-    return {
-      ...d,
-      itemStyle: {
-        color: FORK_COLOR,
-        shadowBlur: 10,
-        shadowColor: 'rgba(52, 152, 219, 0.5)',
-      },
-    }
-  })
+  const { forkDisplayData, personData, warningOuterData, warningInnerData } = buildMapPointData()
 
   mapChartInstance.setOption({
     animation: false,
     series: [
-      { data: warningOuterData, symbolSize: WARN_DISTANCE * 2 * coordScale },
-      { data: warningInnerData, symbolSize: ALARM_DISTANCE * 2 * coordScale },
+      { data: warningOuterData },
+      { data: warningInnerData },
       { data: forkDisplayData },
       { data: personData },
     ],
@@ -484,6 +518,13 @@ function updateMap() {
 
   const now = new Date().toLocaleTimeString('zh-CN', { hour12: false })
   mapMeta.value = `最近更新 ${now}`
+
+  const expireThreshold = Date.now() - ALARM_EXPIRE_MS
+  alarmList.value = alarmList.value.filter(alarm => {
+    if (!alarm.timestamp) return true
+    const alarmTime = new Date(alarm.timestamp).getTime()
+    return !isNaN(alarmTime) && alarmTime > expireThreshold
+  })
 }
 
 function updateMapLayout() {
@@ -497,7 +538,6 @@ function updateMapLayout() {
     chartWidth / MAP_COORD_WIDTH,
     chartHeight / MAP_COORD_HEIGHT
   )
-  coordScale = scale
   const fittedWidth = Math.round(MAP_COORD_WIDTH * scale)
   const fittedHeight = Math.round(MAP_COORD_HEIGHT * scale)
   const offsetLeft = Math.round((chartWidth - fittedWidth) / 2)
@@ -527,30 +567,13 @@ function updateMapLayout() {
 
 async function initData() {
   try {
-    const [devicesRes, alarmsRes] = await Promise.all([
-      api.get('/api/devices'),
-      api.get('/api/recent-alarms?limit=10')
-    ])
-    const newDevices = devicesRes.data.devices || []
-    
-    newDevices.forEach(dev => {
-      if (forkMovementData.value[dev.device_id]) {
-        dev.online_status = 1
-        const state = forkStates.value[dev.device_id]
-        if (state) {
-          dev.pos_x = state.x
-          dev.pos_y = state.y
-        }
-      }
-    })
-    
-    devices.value = newDevices
-    
+    const alarmsRes = await api.get('/api/recent-alarms?limit=10')
     alarmList.value = alarmsRes.data.alarms || []
-    updateMap()
   } catch (e) {
     console.error('初始化数据失败:', e)
   }
+  initForklifts()
+  updateMap()
 }
 
 function isRecentAlarm(alarm) {
@@ -599,23 +622,14 @@ function getAlarmResultClass(alarm) {
   return alarm?.alarm === 1 ? 'is-alarm' : 'is-normal'
 }
 
-function getAlarmReason(alarm) {
-  if (!alarm) return '人离叉车过近'
-  const forks = devices.value.filter(d => forkMovementData.value[d.device_id])
-  const forkIds = forks.map(d => d.device_id)
-  const alarmFork = forks.find(d => d.device_id === alarm.device_id)
-  if (alarmFork) {
-    for (const otherFork of forks) {
-      if (otherFork.device_id === alarm.device_id) continue
-      const dx = (alarmFork.pos_x || 0) - (otherFork.pos_x || 0)
-      const dy = (alarmFork.pos_y || 0) - (otherFork.pos_y || 0)
-      const dist = Math.sqrt(dx * dx + dy * dy)
-      if (dist < 100) {
-        return '叉车和叉车距离过近'
-      }
-    }
-  }
-  return '人和叉车距离过近'
+function getAlarmReason(_alarm) {
+  return '人离叉车过近'
+}
+
+function getRiskDescription(alarm) {
+  if (!alarm) return '暂无风险说明'
+  const zone = alarm.zone || '未知区域'
+  return `${zone}出现人车距离过近告警，建议优先核查现场视线遮挡、人员停留和叉车减速执行情况。`
 }
 
 function isAnalysisPending(alarm) {
@@ -634,6 +648,11 @@ function getAnalysisText(alarm) {
   return 'AI 分析结果暂未生成'
 }
 
+function formatAbsoluteTime(timestamp) {
+  if (!timestamp) return '-'
+  return timestamp.replace('T', ' ')
+}
+
 function handleImageError(e) {
   e.target.style.display = 'none'
 }
@@ -641,6 +660,11 @@ function handleImageError(e) {
 function showAlarmImage(alarm) {
   selectedAlarm.value = alarm
   showImageModal.value = true
+  alarmActionFeedback.value = ''
+}
+
+function triggerAlarmAction(message) {
+  alarmActionFeedback.value = message
 }
 
 let socket = null
@@ -649,7 +673,6 @@ let trendTimer = null
 onMounted(() => {
   mapChartInstance = echarts.init(mapChart.value)
   mapChartInstance.setOption({
-    animation: false,
     backgroundColor: 'transparent',
     grid: {
       left: 0,
@@ -664,16 +687,7 @@ onMounted(() => {
       borderColor: 'rgba(255,255,255,0.3)',
       borderWidth: 1,
       textStyle: { color: C.text, fontSize: 12 },
-      formatter: p => {
-        if (p.data.entityType === 'fork') {
-          const zone = getZoneName(p.data.value[0], p.data.value[1])
-          return `<strong>叉车: ${p.data.name}</strong><br/>区域: ${zone}<br/>位置: (${p.data.value[0].toFixed(0)}, ${p.data.value[1].toFixed(0)})`
-        }
-        if (p.data.entityType === 'person') {
-          return `<strong>行人: ${p.data.name}</strong><br/>位置: (${p.data.value[0].toFixed(0)}, ${p.data.value[1].toFixed(0)})`
-        }
-        return `<strong>${p.data.name}</strong><br/>状态: ${p.data.statusText}<br/>最后更新: ${p.data.lastSeen}`
-      },
+      formatter: p => `<strong>${p.data.name}</strong><br/>位置: (${Math.round(p.data.value[0])}, ${Math.round(p.data.value[1])})<br/>区域: ${getZoneName(p.data.value[0], p.data.value[1])}`,
     },
     xAxis: {
       type: 'value',
@@ -689,67 +703,42 @@ onMounted(() => {
       show: false,
     },
     series: [{
-      name: '警示外圈',
       type: 'scatter',
       coordinateSystem: 'cartesian2d',
       clip: true,
       silent: true,
       z: 1,
-      symbolSize: WARN_DISTANCE * 2 * coordScale,
       symbol: 'circle',
-      itemStyle: {
-        color: WARNING_OUTER_COLOR,
-        borderColor: 'transparent',
-        borderWidth: 0,
-      },
+      symbolSize: WARN_DISTANCE * 2 * coordScale,
+      itemStyle: { color: 'rgba(240, 192, 64, 0.12)' },
       data: [],
     }, {
-      name: '警示内圈',
       type: 'scatter',
       coordinateSystem: 'cartesian2d',
       clip: true,
       silent: true,
       z: 2,
-      symbolSize: ALARM_DISTANCE * 2 * coordScale,
       symbol: 'circle',
-      itemStyle: {
-        color: WARNING_INNER_COLOR,
-        borderColor: 'transparent',
-        borderWidth: 0,
-      },
+      symbolSize: ALARM_DISTANCE * 2 * coordScale,
+      itemStyle: { color: 'rgba(240, 96, 96, 0.10)' },
       data: [],
     }, {
-      name: '叉车',
       type: 'scatter',
       coordinateSystem: 'cartesian2d',
       clip: true,
-      silent: true,
-      z: 5,
-      symbolSize: 8,
+      z: 3,
       symbol: 'path://M0,-8 L6,6 L-6,6 Z',
-      symbolRotate: (val, params) => params.data?.rotation || 0,
-      itemStyle: {
-        color: FORK_COLOR,
-        shadowBlur: 10,
-        shadowColor: 'rgba(52, 152, 219, 0.5)',
-      },
+      symbolSize: 8,
+      itemStyle: { color: FORK_COLOR },
       data: [],
     }, {
-      name: '行人',
       type: 'scatter',
       coordinateSystem: 'cartesian2d',
       clip: true,
-      silent: true,
-      z: 6,
-      symbolSize: 3,
-      symbol: 'path://M0,-8 L-6,8 M0,-8 L6,8 M0,0 L0,12',
-      itemStyle: {
-        color: PERSON_COLOR,
-        shadowBlur: 5,
-        shadowColor: 'rgba(46, 204, 113, 0.3)',
-        borderColor: '#fff',
-        borderWidth: 1,
-      },
+      z: 4,
+      symbol: 'circle',
+      symbolSize: 6,
+      itemStyle: { color: PERSON_COLOR },
       data: [],
     }],
   })
@@ -757,6 +746,7 @@ onMounted(() => {
     requestAnimationFrame(() => {
       mapChartInstance?.resize()
       updateMapLayout()
+      initForklifts()
       updateMap()
     })
   })
@@ -764,33 +754,18 @@ onMounted(() => {
   fetchAlarmTrend()
   initData()
 
+  const simTimer = setInterval(() => {
+    updateMap()
+  }, 200)
+
   socket = io({ auth: { token: getAuthToken() } })
   socket.on('device_update', () => {
-    updateMap()
     fetchAlarmTrend()
-  })
-
-  socket.on('position_update', (data) => {
-    if (!data) return
-    data.forEach((dev) => {
-      if (dev.device_id && forkMovementData.value[dev.device_id]) {
-        return
-      }
-      const index = devices.value.findIndex(d => d.device_id === dev.device_id)
-      if (index !== -1) {
-        devices.value[index] = { ...devices.value[index], ...dev }
-      }
-    })
   })
 
   trendTimer = setInterval(() => {
     fetchAlarmTrend()
   }, 60000)
-
-  // Add movement update timer
-  const movementTimer = setInterval(() => {
-    updateMap()
-  }, 50) // Update every 50ms for smooth animation
 
   const resizeHandler = () => {
     mapChartInstance?.resize()
@@ -804,8 +779,8 @@ onMounted(() => {
       clearInterval(trendTimer)
       trendTimer = null
     }
-    if (movementTimer) {
-      clearInterval(movementTimer)
+    if (simTimer) {
+      clearInterval(simTimer)
     }
     mapChartInstance?.dispose()
     socket?.disconnect()
@@ -925,6 +900,77 @@ onMounted(() => {
   width: 120px;
   justify-content: center;
   animation: kpi-slide 0.6s cubic-bezier(0.4, 0, 0.2, 1) 0.2s both;
+  position: relative;
+  z-index: 100;
+}
+
+.kpi-clickable {
+  cursor: pointer;
+  position: relative;
+}
+
+.fork-detail-popup {
+  position: absolute;
+  left: calc(100% + 8px);
+  top: 50%;
+  transform: translateY(-50%);
+  background: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  border-radius: 14px;
+  padding: 12px 14px;
+  min-width: 220px;
+  box-shadow: 0 12px 40px rgba(140, 120, 180, 0.25), 0 0 0 1px rgba(255, 255, 255, 0.3);
+  z-index: 9999;
+}
+
+.fork-detail-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(140, 120, 180, 0.1);
+}
+
+.fork-detail-row:last-child {
+  border-bottom: none;
+}
+
+.fork-detail-left {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+}
+
+.fork-detail-name {
+  font-family: 'DM Sans', sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  color: #3a3550;
+}
+
+.fork-detail-zone {
+  font-size: 11px;
+  font-weight: 700;
+  color: #6c5ce7;
+  background: rgba(108, 92, 231, 0.12);
+  padding: 1px 6px;
+  border-radius: 4px;
+  letter-spacing: 0.03em;
+}
+
+.fork-detail-pos {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: #8a8aa8;
+}
+
+.fork-detail-empty {
+  font-size: 12px;
+  color: #8a8aa8;
+  text-align: center;
+  padding: 8px 0;
 }
 
 @keyframes kpi-slide {
@@ -947,109 +993,6 @@ onMounted(() => {
 .kpi-item:hover {
   background: rgba(255, 255, 255, 0.20);
   transform: scale(1.03);
-}
-
-.kpi-clickable {
-  cursor: pointer;
-  position: relative;
-}
-
-.fork-detail-popup {
-  position: absolute;
-  left: calc(100% + 8px);
-  top: 50%;
-  transform: translateY(-50%);
-  background: rgba(255, 255, 255, 0.92);
-  backdrop-filter: blur(16px);
-  border: 1px solid rgba(255, 255, 255, 0.4);
-  border-radius: 14px;
-  padding: 12px 14px;
-  min-width: 200px;
-  box-shadow: 0 8px 32px rgba(140, 120, 180, 0.18);
-  z-index: 100;
-}
-
-.fork-detail-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 0;
-  border-bottom: 1px solid rgba(140, 120, 180, 0.1);
-}
-
-.fork-detail-row:last-child {
-  border-bottom: none;
-}
-
-.fork-detail-name {
-  font-family: 'DM Sans', sans-serif;
-  font-size: 12px;
-  font-weight: 600;
-  color: #3a3550;
-  flex-shrink: 0;
-}
-
-.fork-detail-left {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  flex-shrink: 0;
-}
-
-.fork-detail-zone {
-  font-size: 11px;
-  font-weight: 700;
-  color: #6c5ce7;
-  background: rgba(108, 92, 231, 0.12);
-  padding: 1px 6px;
-  border-radius: 4px;
-  letter-spacing: 0.03em;
-}
-
-.fork-detail-pos {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
-  color: #8a8aa8;
-  flex: 1;
-}
-
-.fork-detail-status {
-  font-size: 10px;
-  font-weight: 600;
-  padding: 2px 8px;
-  border-radius: 999px;
-  color: #2c7051;
-  background: rgba(168, 230, 207, 0.26);
-}
-
-.fork-detail-status.alarming {
-  color: #9f1f1f;
-  background: rgba(240, 160, 160, 0.26);
-}
-
-.fork-detail-empty {
-  font-size: 11px;
-  color: #8a8aa8;
-  text-align: center;
-  padding: 8px 0;
-}
-
-.fork-detail-enter-active {
-  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-.fork-detail-leave-active {
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-.fork-detail-enter-from {
-  opacity: 0;
-  transform: translateY(-50%) translateX(-8px);
-}
-
-.fork-detail-leave-to {
-  opacity: 0;
-  transform: translateY(-50%) translateX(-8px);
 }
 
 .kpi-item .kpi-label {
@@ -1153,23 +1096,6 @@ onMounted(() => {
 .legend-dot.normal { background: #a8e6cf; color: #a8e6cf; }
 .legend-dot.alarm { background: #f0a0a0; color: #f0a0a0; }
 .legend-dot.offline { background: #b0a8c8; color: #b0a8c8; }
-
-.legend-fork {
-  width: 0;
-  height: 0;
-  border-left: 3px solid transparent;
-  border-right: 3px solid transparent;
-  border-bottom: 5px solid #3498db;
-}
-
-.legend-person {
-  width: 6px;
-  height: 6px;
-  border-left: 1px solid #2ecc71;
-  border-right: 1px solid #2ecc71;
-  border-bottom: 1px solid #2ecc71;
-  background: transparent;
-}
 
 .chart-card {
   grid-area: chart;
@@ -1359,7 +1285,6 @@ onMounted(() => {
   color: #6d6787;
   display: -webkit-box;
   -webkit-line-clamp: 3;
-  line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
@@ -1498,6 +1423,11 @@ onMounted(() => {
   gap: 8px;
 }
 
+.alarm-detail-row.is-block {
+  padding-top: 4px;
+  border-top: 1px solid rgba(184, 169, 232, 0.18);
+}
+
 .detail-label {
   font-size: 11px;
   font-weight: 700;
@@ -1524,6 +1454,35 @@ onMounted(() => {
 
 .detail-analysis.failed {
   color: #b55353;
+}
+
+.detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.detail-action-btn {
+  min-height: 36px;
+  padding: 0 14px;
+  border: none;
+  border-radius: 999px;
+  background: rgba(240, 160, 160, 0.18);
+  color: #9f1f1f;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.18s ease, background 0.18s ease;
+}
+
+.detail-action-btn:hover {
+  transform: translateY(-1px);
+  background: rgba(240, 160, 160, 0.3);
+}
+
+.detail-action-feedback {
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: #6d6787;
 }
 
 /* Responsive */
