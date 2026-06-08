@@ -29,3 +29,32 @@ ignore/
 .vscode
 .ruff_cache
 AGENTS.MD
+
+# STM32 Build outputs
+**/Objects/
+**/Listings/
+**/DebugConfig/
+**/RTE/
+
+# Keil project temp files
+*.uvguix.*
+*.bak
+*.dep
+*.d
+*.o
+*.crf
+*.htm
+*.lnp
+*.sct
+*.axf
+*.hex
+*.bin
+*.map
+*.lst
+
+# JQ8900 audio files (too large for git)
+JQ8900/
+
+# OS files
+Thumbs.db
+Desktop.ini
